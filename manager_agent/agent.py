@@ -5,6 +5,10 @@ from google.adk.agents import Agent
 from google.adk.runners import InMemoryRunner
 from google.genai import types
 
+from manager_agent.workspace_utils import Workspace
+
+workspace = Workspace.create()
+
 
 def _create_sub_agent(task_prompt: str) -> tuple[InMemoryRunner, str, str]:
     """Create an independent ADK environment for a single sub-agent task."""
@@ -71,6 +75,18 @@ async def spawn_sub_agents(task_prompts: list[str]) -> dict:
     return {"results": results}
 
 
+def execute_command(command: str) -> dict:
+    """Execute a shell command in the workspace.
+
+    Args:
+        command: The shell command to run (e.g. "ls -la", "python script.py").
+
+    Returns:
+        A dictionary containing the command execution result.
+    """
+    return workspace.exec(command)
+
+
 root_agent = Agent(
     model="gemini-3-flash-preview",
     name="manager_agent",
@@ -88,5 +104,5 @@ root_agent = Agent(
         "After the sub-agents complete, review their responses, synthesize the "
         "results, and present a unified answer to the user."
     ),
-    tools=[spawn_sub_agents],
+    tools=[spawn_sub_agents, execute_command],
 )
