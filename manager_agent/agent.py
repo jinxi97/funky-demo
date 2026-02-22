@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import uuid
 
 from google.adk.agents import Agent
@@ -8,6 +9,7 @@ from google.genai import types
 from manager_agent.workspace_utils import Workspace
 
 workspace = Workspace.create()
+atexit.register(workspace.delete)
 
 
 def _create_sub_agent(task_prompt: str) -> tuple[InMemoryRunner, str, str]:
