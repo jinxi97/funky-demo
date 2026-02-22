@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import time
+
 import httpx
 
 BASE_URL = "http://34.173.139.208"
@@ -125,6 +127,51 @@ class Workspace:
     def create_snapshot_trigger(self) -> dict:
         """Create a snapshot trigger for this workspace."""
         return create_snapshot_trigger(self.workspace_id)
+
+    @classmethod
+    def fork(
+        cls,
+        source: Workspace,
+        *,
+        num_of_workspace: int = 1,
+        timeout: float = 60.0,
+    ) -> list[Workspace]:
+        """Fork a workspace by snapshotting it and restoring into new ones.
+
+        Args:
+            source: The workspace to fork from.
+            num_of_workspace: Number of new workspaces to create from the snapshot.
+            timeout: Maximum seconds to wait for the snapshot to become ready.
+
+        Returns:
+            A list of new Workspaces restored from the snapshot of the source.
+
+        Raises:
+            TimeoutError: If the snapshot is not ready within the timeout.
+        """
+        trigger = source.create_snapshot_trigger()
+        trigger_name = trigger["name"]
+
+        deadline = time.monotonic() + timeout
+        while True:
+            try:
+                status = get_snapshot_status(trigger_name)
+            except httpx.HTTPStatusError:
+                status = {}
+            if status.get("ready"):
+                break
+            if time.monotonic() >= deadline:
+                raise TimeoutError(
+                    f"Snapshot {trigger_name!r} not ready after {timeout}s"
+                )
+            time.sleep(1)
+
+        snapshot_name = status["snapshot_name"]
+        workspaces = []
+        for _ in range(num_of_workspace):
+            result = restore_from_snapshot(snapshot_name)
+            workspaces.append(cls(result["workspace_id"]))
+        return workspaces
 
     def __repr__(self) -> str:
         return f"Workspace({self.workspace_id!r})"

@@ -12,15 +12,33 @@ workspace = Workspace.create()
 atexit.register(workspace.delete)
 
 
-def _create_sub_agent(task_prompt: str) -> tuple[InMemoryRunner, str, str]:
+def _make_sub_execute_command(ws: Workspace):
+    """Create an execute_command tool function bound to a specific workspace."""
+    def execute_command(command: str) -> dict:
+        """Execute a shell command in this agent's workspace.
+
+        Args:
+            command: The shell command to run (e.g. "ls -la", "python script.py").
+
+        Returns:
+            A dictionary containing the command execution result.
+        """
+        return ws.exec(command)
+    return execute_command
+
+
+def _create_sub_agent(task_prompt: str, ws: Workspace) -> tuple[InMemoryRunner, str, str]:
     """Create an independent ADK environment for a single sub-agent task."""
     agent = Agent(
         model="gemini-3-flash-preview",
         name="sub_agent",
         description="A sub-agent that executes tasks in its own Funky workspace.",
         instruction=(
-            "You are a helpful assistant that can handle user requests."
+            "You are a helpful assistant that can handle user requests. "
+            "You have access to the 'execute_command' tool to run shell "
+            "commands in your workspace."
         ),
+        tools=[_make_sub_execute_command(ws)],
     )
 
     runner = InMemoryRunner(agent=agent)
@@ -29,9 +47,9 @@ def _create_sub_agent(task_prompt: str) -> tuple[InMemoryRunner, str, str]:
     return runner, user_id, session_id
 
 
-async def _run_sub_agent(task_prompt: str) -> str:
+async def _run_sub_agent(task_prompt: str, ws: Workspace) -> str:
     """Run a single sub-agent to completion and return its final response."""
-    runner, user_id, session_id = _create_sub_agent(task_prompt)
+    runner, user_id, session_id = _create_sub_agent(task_prompt, ws)
 
     session = await runner.session_service.create_session(
         app_name=runner.app_name,
@@ -67,8 +85,14 @@ async def spawn_sub_agents(task_prompts: list[str]) -> dict:
         A dictionary with a 'results' key containing a list of dicts, each with
         the original 'prompt' and the sub-agent's 'response'.
     """
-    tasks = [_run_sub_agent(prompt) for prompt in task_prompts]
+    forked_workspaces = Workspace.fork(
+        workspace, num_of_workspace=len(task_prompts))
+    tasks = [_run_sub_agent(prompt, ws)
+             for prompt, ws in zip(task_prompts, forked_workspaces)]
     responses = await asyncio.gather(*tasks)
+
+    for ws in forked_workspaces:
+        ws.delete()
 
     results = []
     for prompt, response in zip(task_prompts, responses):
