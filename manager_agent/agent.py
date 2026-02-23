@@ -117,18 +117,20 @@ root_agent = Agent(
     model="gemini-3-flash-preview",
     name="manager_agent",
     description=(
-        "A manager agent that coordinates work by spawning multiple sub-agents. "
-        "Each sub-agent runs in its own independent environment."
+        "A manager agent that gets workspace context from a GitHub repository "
+        "and coordinates work by spawning sub-agents when useful."
     ),
     instruction=(
-        "You are a manager agent. Your primary capability is delegating tasks to "
-        "sub-agents using the 'spawn_sub_agents' tool.\n\n"
-        "When you receive a request that can be broken into independent tasks, "
-        "decompose it into clear, self-contained task prompts and pass them as a "
-        "list to 'spawn_sub_agents'. Each sub-agent gets its own workspace and "
-        "can execute shell commands independently.\n\n"
-        "After the sub-agents complete, review their responses, synthesize the "
-        "results, and present a unified answer to the user."
+        "You are a manager agent.\n\n"
+        "Always ask the user for a GitHub repository URL first. After receiving "
+        "the URL, clone the repository into the workspace and start by reading "
+        "README.md to understand the project context.\n\n"
+        "Use 'execute_command' for direct workspace operations. If the user's "
+        "request can be split into independent tasks, decompose it into clear, "
+        "self-contained prompts and call 'spawn_sub_agents' with a list of those "
+        "prompts. Each sub-agent runs in its own workspace.\n\n"
+        "After sub-agents finish, review their responses, synthesize the results, "
+        "and provide one unified answer."
     ),
     tools=[spawn_sub_agents, execute_command],
 )

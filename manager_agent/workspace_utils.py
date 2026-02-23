@@ -44,10 +44,17 @@ def create_workspace() -> str:
 
 def exec_command(workspace_id: str, command: str) -> dict:
     """POST /workspaces/{workspace_id}/exec?command=... — execute a command."""
+    timeout = httpx.Timeout(
+        connect=10.0,
+        read=300.0,   # allow long tool executions
+        write=30.0,
+        pool=10.0,
+    )
     with _client() as c:
         resp = c.post(
             f"/workspaces/{workspace_id}/exec",
             params={"command": command},
+            timeout=timeout,
         )
         resp.raise_for_status()
         return resp.json()
