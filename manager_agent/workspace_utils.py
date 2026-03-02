@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import os
 import time
 
 import httpx
 
-BASE_URL = "http://34.173.139.208"
+BASE_URL = os.environ.get("WORKSPACE_API_URL", "http://localhost:8000")
 DEFAULT_TIMEOUT = 30.0
 
 

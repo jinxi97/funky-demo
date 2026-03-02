@@ -3,7 +3,9 @@ import atexit
 import uuid
 
 from google.adk.agents import Agent
-from google.adk.runners import InMemoryRunner
+from google.adk.runners import Runner
+from google.adk.sessions import BaseSessionService
+from google.adk.tools import ToolContext
 from google.genai import types
 
 from manager_agent.workspace_utils import Workspace
@@ -27,11 +29,16 @@ def _make_sub_execute_command(ws: Workspace):
     return execute_command
 
 
-def _create_sub_agent(task_prompt: str, ws: Workspace) -> tuple[InMemoryRunner, str, str]:
-    """Create an independent ADK environment for a single sub-agent task."""
+def _create_sub_agent(
+    ws: Workspace,
+    session_service: BaseSessionService,
+    app_name: str,
+    agent_name: str,
+) -> tuple[Runner, str]:
+    """Create a sub-agent that shares the root agent's session service and app_name."""
     agent = Agent(
         model="gemini-3-flash-preview",
-        name="sub_agent",
+        name=agent_name,
         description="A sub-agent that executes tasks in its own Funky workspace.",
         instruction=(
             "You are a helpful assistant that can handle user requests. "
@@ -41,18 +48,30 @@ def _create_sub_agent(task_prompt: str, ws: Workspace) -> tuple[InMemoryRunner, 
         tools=[_make_sub_execute_command(ws)],
     )
 
-    runner = InMemoryRunner(agent=agent)
-    user_id = f"user_{uuid.uuid4().hex[:8]}"
-    session_id = f"session_{uuid.uuid4().hex[:8]}"
-    return runner, user_id, session_id
+    runner = Runner(
+        app_name=app_name,
+        agent=agent,
+        session_service=session_service,
+    )
+    session_id = f"session_{agent_name}_{uuid.uuid4().hex[:8]}"
+    return runner, session_id
 
 
-async def _run_sub_agent(task_prompt: str, ws: Workspace) -> str:
+async def _run_sub_agent(
+    task_prompt: str,
+    ws: Workspace,
+    session_service: BaseSessionService,
+    app_name: str,
+    user_id: str,
+    agent_name: str,
+) -> str:
     """Run a single sub-agent to completion and return its final response."""
-    runner, user_id, session_id = _create_sub_agent(task_prompt, ws)
+    runner, session_id = _create_sub_agent(
+        ws, session_service, app_name, agent_name
+    )
 
-    session = await runner.session_service.create_session(
-        app_name=runner.app_name,
+    session = await session_service.create_session(
+        app_name=app_name,
         user_id=user_id,
         session_id=session_id,
     )
@@ -73,30 +92,46 @@ async def _run_sub_agent(task_prompt: str, ws: Workspace) -> str:
     return "\n".join(response_parts) if response_parts else "(no response)"
 
 
-async def spawn_sub_agents(task_prompts: list[str]) -> dict:
+async def spawn_sub_agents(
+    task_prompts: list[dict], tool_context: ToolContext
+) -> dict:
     """Spawn multiple sub-agents, each running independently in its own ADK environment.
 
+    Each sub-agent runs in a separate session within the same ADK app, so its
+    activities are visible in the ADK web UI.
+
     Args:
-        task_prompts: A list of task descriptions. Each string becomes the prompt
-                      for one sub-agent. The number of strings determines how many
-                      sub-agents are spawned.
+        task_prompts: A list of task objects. Each object has a 'name' key for
+                      the sub-agent's name (used as its app_name in the UI) and
+                      a 'prompt' key for the task description.
+        tool_context: Injected by ADK. Used to share the root agent's session
+                      service so sub-agent sessions appear in the UI.
 
     Returns:
         A dictionary with a 'results' key containing a list of dicts, each with
-        the original 'prompt' and the sub-agent's 'response'.
+        the original 'prompt', 'name', and the sub-agent's 'response'.
     """
+    invocation_ctx = tool_context._invocation_context
+    session_service = invocation_ctx.session_service
+    app_name = invocation_ctx.app_name
+    user_id = invocation_ctx.user_id
+
     forked_workspaces = Workspace.fork(
         workspace, num_of_workspace=len(task_prompts))
-    tasks = [_run_sub_agent(prompt, ws)
-             for prompt, ws in zip(task_prompts, forked_workspaces)]
+    tasks = [
+        _run_sub_agent(task["prompt"], ws, session_service,
+                       app_name, user_id, task["name"])
+        for task, ws in zip(task_prompts, forked_workspaces)
+    ]
     responses = await asyncio.gather(*tasks)
 
     for ws in forked_workspaces:
         ws.delete()
 
     results = []
-    for prompt, response in zip(task_prompts, responses):
-        results.append({"prompt": prompt, "response": response})
+    for task, response in zip(task_prompts, responses):
+        results.append(
+            {"name": task["name"], "prompt": task["prompt"], "response": response})
 
     return {"results": results}
 
@@ -121,14 +156,15 @@ root_agent = Agent(
         "and coordinates work by spawning sub-agents when useful."
     ),
     instruction=(
-        "You are a manager agent.\n\n"
+        "You are a helpful agent with capability to spawn more sub-agents to do tasks if needed.\n\n"
         "Always ask the user for a GitHub repository URL first. After receiving "
         "the URL, clone the repository into the workspace and start by reading "
         "README.md to understand the project context.\n\n"
         "Use 'execute_command' for direct workspace operations. If the user's "
         "request can be split into independent tasks, decompose it into clear, "
-        "self-contained prompts and call 'spawn_sub_agents' with a list of those "
-        "prompts. Each sub-agent runs in its own workspace.\n\n"
+        "self-contained prompts and call 'spawn_sub_agents' with a list of task "
+        "objects, each with a 'name' (a descriptive agent name) and a 'prompt'. "
+        "Each sub-agent runs in its own workspace.\n\n"
         "After sub-agents finish, review their responses, synthesize the results, "
         "and provide one unified answer."
     ),
