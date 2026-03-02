@@ -44,7 +44,7 @@ def create_workspace() -> str:
 
 
 def exec_command(workspace_id: str, command: str) -> dict:
-    """POST /workspaces/{workspace_id}/exec?command=... — execute a command."""
+    """POST /exec — execute a command in a workspace."""
     timeout = httpx.Timeout(
         connect=10.0,
         read=300.0,   # allow long tool executions
@@ -52,13 +52,20 @@ def exec_command(workspace_id: str, command: str) -> dict:
         pool=10.0,
     )
     with _client() as c:
-        resp = c.post(
-            f"/workspaces/{workspace_id}/exec",
-            params={"command": command},
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
+        try:
+            resp = c.post(
+                "/execute",
+                json={"workspace_id": workspace_id, "command": command},
+                timeout=timeout,
+            )
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.HTTPStatusError as e:
+            return {
+                "error": True,
+                "status_code": e.response.status_code,
+                "detail": e.response.text,
+            }
 
 
 def delete_workspace(workspace_id: str) -> dict:
