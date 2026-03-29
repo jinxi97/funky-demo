@@ -1,5 +1,6 @@
 import asyncio
-import atexit
+import signal
+import sys
 import uuid
 
 from google.adk.agents import Agent
@@ -11,7 +12,19 @@ from google.genai import types
 from manager_agent.workspace_utils import Workspace
 
 workspace = Workspace.create()
-atexit.register(workspace.delete)
+
+
+def _cleanup_and_exit(signum, frame):
+    """Handle SIGINT/SIGTERM: delete workspace and exit."""
+    try:
+        workspace.delete()
+    except Exception:
+        pass
+    sys.exit(0)
+
+
+signal.signal(signal.SIGINT, _cleanup_and_exit)
+signal.signal(signal.SIGTERM, _cleanup_and_exit)
 
 
 def _make_sub_execute_command(ws: Workspace):
@@ -46,6 +59,11 @@ def _create_sub_agent(
             "commands in your workspace."
         ),
         tools=[_make_sub_execute_command(ws)],
+        generate_content_config=types.GenerateContentConfig(
+            thinking_config=types.ThinkingConfig(
+                thinking_level=types.ThinkingLevel.LOW,
+            )
+        ),
     )
 
     runner = Runner(
@@ -95,7 +113,7 @@ async def _run_sub_agent(
 async def spawn_sub_agents(
     task_prompts: list[dict], tool_context: ToolContext
 ) -> dict:
-    """Spawn multiple sub-agents, each running independently in its own ADK environment.
+    """Spawn multiple sub-agents, each running independently in its own ADK environment forked from the parent agent's workspace (therefore contains all files from parent workspace).
 
     Each sub-agent runs in a separate session within the same ADK app, so its
     activities are visible in the ADK web UI.
@@ -116,7 +134,7 @@ async def spawn_sub_agents(
     app_name = invocation_ctx.app_name
     user_id = invocation_ctx.user_id
 
-    forked_workspaces = Workspace.fork(
+    forked_workspaces = await Workspace.fork(
         workspace, num_of_workspace=len(task_prompts))
     tasks = [
         _run_sub_agent(task["prompt"], ws, session_service,
@@ -157,9 +175,6 @@ root_agent = Agent(
     ),
     instruction=(
         "You are a helpful agent with capability to spawn more sub-agents to do tasks if needed.\n\n"
-        "Always ask the user for a GitHub repository URL first. After receiving "
-        "the URL, clone the repository into the workspace and start by reading "
-        "README.md to understand the project context.\n\n"
         "Use 'execute_command' for direct workspace operations. If the user's "
         "request can be split into independent tasks, decompose it into clear, "
         "self-contained prompts and call 'spawn_sub_agents' with a list of task "
@@ -169,4 +184,9 @@ root_agent = Agent(
         "and provide one unified answer."
     ),
     tools=[spawn_sub_agents, execute_command],
+    generate_content_config=types.GenerateContentConfig(
+        thinking_config=types.ThinkingConfig(
+            thinking_level=types.ThinkingLevel.LOW,
+        )
+    ),
 )

@@ -15,6 +15,10 @@ def _client() -> httpx.Client:
     return httpx.Client(base_url=BASE_URL, timeout=DEFAULT_TIMEOUT)
 
 
+def _async_client() -> httpx.AsyncClient:
+    return httpx.AsyncClient(base_url=BASE_URL, timeout=DEFAULT_TIMEOUT)
+
+
 # ---------- Health / root ----------
 
 def health_check() -> dict:
@@ -38,7 +42,7 @@ def root() -> dict:
 def create_workspace() -> str:
     """POST /workspaces — create a new workspace and return its workspace_id."""
     with _client() as c:
-        resp = c.post("/workspaces")
+        resp = c.post("/workspace")
         resp.raise_for_status()
         return resp.json()["workspace_id"]
 
@@ -70,6 +74,7 @@ def exec_command(workspace_id: str, command: str) -> dict:
 
 def delete_workspace(workspace_id: str) -> dict:
     """DELETE /workspaces/{workspace_id} — delete a workspace."""
+    print(f"Deleting workspace {workspace_id!r}...")
     with _client() as c:
         resp = c.delete(f"/workspaces/{workspace_id}")
         resp.raise_for_status()
@@ -83,6 +88,7 @@ def create_snapshot_trigger(workspace_id: str) -> dict:
     with _client() as c:
         resp = c.post("/snapshots/triggers", json={"workspace_id": workspace_id})
         resp.raise_for_status()
+        print(resp.json())
         return resp.json()
 
 
@@ -102,11 +108,22 @@ def get_snapshot_status(trigger_name: str) -> dict:
         return resp.json()
 
 
-def restore_from_snapshot(snapshot_name: str) -> dict:
-    """POST /snapshots/restore — restore from a named snapshot."""
-    with _client() as c:
-        resp = c.post("/snapshots/restore", json={"snapshot_name": snapshot_name})
+async def restore_from_snapshot(workspace_id: str) -> dict:
+    """POST /snapshots/restore — restore from an existing workspace_id."""
+    timeout = httpx.Timeout(
+        connect=10.0,
+        read=300.0,   # snapshot restore can take minutes
+        write=30.0,
+        pool=10.0,
+    )
+    print(f"Restoring workspace from snapshot {workspace_id!r}...")
+    async with _async_client() as c:
+        resp = await c.post("/snapshots/restore",
+                            json={"workspace_id": workspace_id},
+                            timeout=timeout)
         resp.raise_for_status()
+        print(
+            f"Successfully restored workspace from snapshot {workspace_id!r}: {resp.json()}")
         return resp.json()
 
 
@@ -124,6 +141,7 @@ class Workspace:
 
     def __init__(self, workspace_id: str) -> None:
         self.workspace_id = workspace_id
+        print(f"Created Workspace with ID: {self.workspace_id!r}")
 
     @classmethod
     def create(cls) -> Workspace:
@@ -133,6 +151,8 @@ class Workspace:
 
     def exec(self, command: str) -> dict:
         """Execute a command in this workspace."""
+        print(
+            f"Executing command in workspace {self.workspace_id!r}: {command!r}")
         return exec_command(self.workspace_id, command)
 
     def delete(self) -> dict:
@@ -144,7 +164,7 @@ class Workspace:
         return create_snapshot_trigger(self.workspace_id)
 
     @classmethod
-    def fork(
+    async def fork(
         cls,
         source: Workspace,
         *,
@@ -164,29 +184,51 @@ class Workspace:
         Raises:
             TimeoutError: If the snapshot is not ready within the timeout.
         """
-        trigger = source.create_snapshot_trigger()
-        trigger_name = trigger["name"]
+        print(
+            f"Forking workspace {source.workspace_id!r} into {num_of_workspace} workspaces...")
+        max_retries = 3
+        for attempt in range(1, max_retries + 1):
+            trigger = source.create_snapshot_trigger()
+            trigger_name = trigger["name"]
 
-        deadline = time.monotonic() + timeout
-        while True:
-            try:
-                status = get_snapshot_status(trigger_name)
-            except httpx.HTTPStatusError:
-                status = {}
-            if status.get("ready"):
+            deadline = time.monotonic() + timeout
+            snapshot_ready = False
+            while True:
+                try:
+                    status = get_snapshot_status(trigger_name)
+                except httpx.HTTPStatusError:
+                    status = {}
+                if status.get("ready"):
+                    snapshot_ready = True
+                    break
+                if time.monotonic() >= deadline:
+                    break
+                time.sleep(1)
+
+            if snapshot_ready:
                 break
-            if time.monotonic() >= deadline:
-                raise TimeoutError(
-                    f"Snapshot {trigger_name!r} not ready after {timeout}s"
-                )
-            time.sleep(1)
 
-        snapshot_name = status["snapshot_name"]
-        workspaces = []
+            if attempt < max_retries:
+                print(
+                    f"Snapshot {trigger_name!r} not ready after {timeout}s, "
+                    f"retrying ({attempt}/{max_retries})..."
+                )
+            else:
+                raise TimeoutError(
+                    f"Snapshot not ready after {timeout}s "
+                    f"(tried {max_retries} times)"
+                )
+        print(f"Snapshot {trigger_name!r} is ready, proceeding to restore...")
+
+        results = []
         for _ in range(num_of_workspace):
-            result = restore_from_snapshot(snapshot_name)
-            workspaces.append(cls(result["workspace_id"]))
-        return workspaces
+            result = await restore_from_snapshot(source.workspace_id)
+            results.append(result)
+        print(
+            f"Restored {len(results)} workspaces from snapshot {trigger_name!r}")
+        print("Restored workspace IDs: " +
+              ", ".join(r["workspace_id"] for r in results))
+        return [cls(r["workspace_id"]) for r in results]
 
     def __repr__(self) -> str:
         return f"Workspace({self.workspace_id!r})"
