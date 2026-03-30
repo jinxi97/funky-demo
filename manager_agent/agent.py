@@ -9,8 +9,9 @@ from google.adk.sessions import BaseSessionService
 from google.adk.tools import ToolContext
 from google.genai import types
 
-from manager_agent.workspace_utils import Workspace
+from manager_agent.workspace_factory import get_workspace_class
 
+Workspace = get_workspace_class()
 workspace = Workspace.create()
 
 

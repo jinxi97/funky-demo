@@ -42,7 +42,7 @@ def root() -> dict:
 def create_workspace() -> str:
     """POST /workspaces — create a new workspace and return its workspace_id."""
     with _client() as c:
-        resp = c.post("/workspace")
+        resp = c.post("/workspaces")
         resp.raise_for_status()
         return resp.json()["workspace_id"]
 
