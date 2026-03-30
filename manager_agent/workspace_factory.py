@@ -46,19 +46,27 @@ class _SDKWorkspace:
     @classmethod
     def create(cls) -> _SDKWorkspace:
         from funky import Workspace as _FunkyWS
-        sdk_ws = _FunkyWS.create()
+        sdk_ws = _FunkyWS.create(timeout=300.0)
         return cls(sdk_ws)
 
     # -- execution -----------------------------------------------------------
 
     def exec(self, command: str) -> dict:
         """Execute a command; returns a dict compatible with the legacy API."""
-        result = self._ws.execute(command)
-        return {
-            "stdout": result.stdout,
-            "stderr": result.stderr,
-            "exit_code": result.exit_code,
-        }
+        from funky.errors import APIError
+        try:
+            result = self._ws.execute(command)
+            return {
+                "stdout": result.stdout,
+                "stderr": result.stderr,
+                "exit_code": result.exit_code,
+            }
+        except APIError as e:
+            return {
+                "error": True,
+                "status_code": e.status_code,
+                "detail": str(e),
+            }
 
     # -- lifecycle -----------------------------------------------------------
 
@@ -86,6 +94,7 @@ class _SDKWorkspace:
                 source._ws.claim_name,
                 source._ws.namespace,
                 snapshot_name,
+                timeout=300.0,
             )
             results.append(cls(sdk_ws))
         return results
